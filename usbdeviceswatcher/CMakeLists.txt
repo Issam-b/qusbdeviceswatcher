@@ -18,5 +18,8 @@ add_library(${target_name} SHARED
     usbdeviceswatcher.cpp usbdeviceswatcher.h usbdeviceswatcher_p.h
 )
 
-target_link_libraries(${target_name} PRIVATE Qt${QT_VERSION_MAJOR}::Core)
+target_link_libraries(${target_name} PRIVATE
+    Qt${QT_VERSION_MAJOR}::Core
+    ${FWCoreFoundation}
+    ${FWIOKit})
 target_compile_definitions(${target_name} PRIVATE USBDEVICESWATCHER_LIBRARY)

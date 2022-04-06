@@ -41,6 +41,8 @@ public:
     explicit UsbDevicesWatcherPrivate(QObject *parent = nullptr);
     ~UsbDevicesWatcherPrivate() = default;
 
+    static UsbDevicesWatcherPrivate *instance();
+
     bool initDeviceMonitor();
     void releaseDeviceMonitor();
 

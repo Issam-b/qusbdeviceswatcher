@@ -29,7 +29,11 @@
 #include <winuser.h>
 #include <Dbt.h>
 static constexpr const wchar_t HwndClassName[] = L"UsbDevicesWatcherPrivate";
-#elif defined(Q_OS_LINUX)
+#elif defined(Q_OS_MACOS)
+#include <IOKit/IOKitLib.h>
+#include <IOKit/usb/IOUSBLib.h>
+#include <CoreFoundation/CoreFoundation.h>
+#else
 #include <locale.h>
 #include <unistd.h>
 #endif
@@ -39,8 +43,13 @@ UsbDevicesWatcherPrivate::UsbDevicesWatcherPrivate(QObject *parent)
 {
 }
 
-#if defined(Q_OS_WIN)
+UsbDevicesWatcherPrivate *UsbDevicesWatcherPrivate::instance()
+{
+    static UsbDevicesWatcherPrivate instance;
+    return &instance;
+}
 
+#if defined(Q_OS_WIN)
 bool UsbDevicesWatcherPrivate::initDeviceMonitor()
 {
     WNDCLASSEX wx;
@@ -138,9 +147,97 @@ LRESULT UsbDevicesWatcherPrivate::messageHandler(HWND__* hwnd, UINT message,
 
     return 0L;
 }
+#elif defined(Q_OS_MACOS)
+static QString getDeviceUid(io_service_t usbDevice)
+{
+    QString uid;
+    const CFStringRef cfUid = static_cast<CFStringRef>(IORegistryEntryCreateCFProperty(
+                                                           usbDevice,
+                                                           CFSTR(kUSBSerialNumberString),
+                                                           kCFAllocatorDefault, 0));
+    if (cfUid) {
+        uid = QString::fromCFString(cfUid);
+        CFRelease(cfUid);
+    }
 
-#elif defined(Q_OS_LINUX)
+    return uid;
+}
 
+void deviceConnectedCallback(void *refCon, io_iterator_t iterator)
+{
+    qWarning() << "here connected";
+    io_service_t usbDevice;
+
+    while ((usbDevice = IOIteratorNext(iterator))) {
+        QString uid = getDeviceUid(usbDevice);
+        if (uid.isEmpty())
+            qWarning() << "Failed to retrieve connected device's UID";
+        else
+            emit UsbDevicesWatcherPrivate::instance()->deviceConnected(uid);
+        const kern_return_t released = IOObjectRelease(usbDevice);
+        if (released != KERN_SUCCESS)
+            qWarning() << "Failed to release the connected  usb device after reading info";
+    }
+}
+
+void deviceDisconnectedCallback(void *refCon, io_iterator_t iterator)
+{
+    qWarning() << "here disconnected";
+    io_service_t usbDevice;
+
+    while ((usbDevice = IOIteratorNext(iterator))) {
+        QString uid = getDeviceUid(usbDevice);
+        if (uid.isEmpty())
+            qWarning() << "Failed to retrieve disconnected device's UID";
+        else
+            emit UsbDevicesWatcherPrivate::instance()->deviceDisconnected(uid);
+        const kern_return_t released = IOObjectRelease(usbDevice);
+        if (released != KERN_SUCCESS)
+            qWarning() << "Failed to release the disconnected usb device after reading info";
+    }
+}
+
+bool UsbDevicesWatcherPrivate::initDeviceMonitor()
+{
+    IONotificationPortRef notificationPort = IONotificationPortCreate(kIOMasterPortDefault);
+    CFRunLoopSourceRef runLoopSource = IONotificationPortGetRunLoopSource(notificationPort);
+    CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, kCFRunLoopDefaultMode);
+
+    const CFMutableDictionaryRef  matchingDictionary = IOServiceMatching(kIOUSBDeviceClassName);
+    // IOServiceAddMatchingNotification releases this, so we retain for the next call
+    CFRetain(matchingDictionary);
+
+    // Now set up a notification to be called when a device is first matched by I/O Kit.
+    io_iterator_t addedIter = 0;
+    const kern_return_t addResult = IOServiceAddMatchingNotification(notificationPort,
+                                                kIOMatchedNotification, matchingDictionary,
+                                                deviceConnectedCallback, NULL, &addedIter);
+    if (addResult != KERN_SUCCESS) {
+        qWarning() << "Failed to add device connected callback.";
+        return false;
+    }
+
+    io_iterator_t removedIter = 0;
+    const kern_return_t removeResult = IOServiceAddMatchingNotification(notificationPort,
+                                                    kIOTerminatedNotification, matchingDictionary,
+                                                    deviceDisconnectedCallback, NULL, &removedIter);
+    if (addResult != KERN_SUCCESS) {
+        qWarning() << "Failed to add device disconnected callback.";
+        return false;
+    }
+
+    // Iterate once to get already-present devices and arm the notification
+    io_service_t usbDev;
+    while ((usbDev = IOIteratorNext(addedIter))) { IOObjectRelease(usbDev); }
+    while ((usbDev = IOIteratorNext(removedIter))) { IOObjectRelease(usbDev); }
+
+    return true;
+}
+
+void UsbDevicesWatcherPrivate::releaseDeviceMonitor()
+{
+}
+#else
 bool UsbDevicesWatcherPrivate::initDeviceMonitor()
 {
     dev_udev = udev_new();
